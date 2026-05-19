@@ -1,50 +1,23 @@
-
-"""
-Word-Based Sign Language to Speech System
-----------------------------------------
-Gesture → Word → Speech (Stable + Minimal)
-"""
+import os
+os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 import cv2
-import time
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from gesture_classifier import GestureClassifier
-from text_speech import TextSpeechEngine
 from hand_tracker import HandTracker
-from display import DisplayEngine
+from gesture_classifier import GestureClassifier
+from text_speech import speak
 
 
 def main():
-    print("\n[INFO] Starting system...")
-
-    # Init components
-    hand_tracker = HandTracker()
+    tracker = HandTracker()
     classifier = GestureClassifier()
-    tts_engine = TextSpeechEngine()
-    display_engine = DisplayEngine()
 
     cap = cv2.VideoCapture(0)
 
-    if not cap.isOpened():
-        print("[ERROR] Webcam not found")
-        return
+    sentence = ""
+    last_label = None
+    cooldown = 0
 
-    print("[INFO] Press 'q' to quit\n")
-
-    # --- State ---
-    current_word = ""
-    last_word = ""
-    stable_count = 0
-
-    STABLE_THRESHOLD = 10
-    COOLDOWN_FRAMES = 20
-    cooldown_counter = 0
-
-    prev_time = time.time()
+    font = cv2.FONT_HERSHEY_SIMPLEX
 
     while True:
         ret, frame = cap.read()
@@ -54,68 +27,83 @@ def main():
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # FPS
-        curr_time = time.time()
-        fps = 1 / max(curr_time - prev_time, 1e-6)
-        prev_time = curr_time
+        lm, _ = tracker.detect(rgb)
 
-        # Detect hand
-        landmarks, _ = hand_tracker.detect(rgb)
+        label = None
+        confidence = 0
 
-        predicted_word = ""
-        confidence = 0.0
+        if lm is not None:
+            tracker.draw_landmarks(frame, lm)
+            features = tracker.extract_features(lm)
 
-        if landmarks is not None:
-            hand_tracker.draw_landmarks(frame, landmarks)
+            label, confidence = classifier.predict(features)
 
-            features = hand_tracker.extract_features(landmarks)
-            predicted_word, confidence = classifier.predict(features)
-
-            # Stability logic
-            if predicted_word == last_word and predicted_word != "":
-                stable_count += 1
+        # -------- GESTURE INPUT -------- #
+        if label and label != last_label and cooldown == 0:
+            if label == "SPACE":
+                sentence += " "
+            elif label == "DEL":
+                sentence = sentence[:-1]
+            elif label == "SPEAK":
+                speak(sentence)
             else:
-                stable_count = 0
-                last_word = predicted_word
+                sentence += label
 
-            # Cooldown handling
-            if cooldown_counter > 0:
-                cooldown_counter -= 1
+            cooldown = 10  # prevent spam
 
-            # Accept stable gesture
-            if stable_count >= STABLE_THRESHOLD and cooldown_counter == 0:
-                current_word = predicted_word
+        last_label = label
 
-                print(f"[DETECTED] {current_word}")
+        if cooldown > 0:
+            cooldown -= 1
 
-                # Speak once
-                tts_engine.speak_async(current_word)
-
-                cooldown_counter = COOLDOWN_FRAMES
-                stable_count = 0
-
-        # Draw UI
-        frame = display_engine.draw(
-            frame=frame,
-            predicted_word=predicted_word,
-            confidence=confidence,
-            current_text=current_word,
-            fps=fps,
-            hold_progress=0,
-            cooldown=cooldown_counter > 0
-        )
-
-        cv2.imshow("Gesture Speech System", frame)
-
+        # -------- KEYBOARD CONTROLS -------- #
         key = cv2.waitKey(1) & 0xFF
+
         if key == ord('q'):
             break
 
+        elif key == ord('s'):  # speak
+            speak(sentence)
+
+        elif key == ord('c'):  # clear
+            sentence = ""
+
+        elif key == 8:  # backspace
+            sentence = sentence[:-1]
+
+        elif key == 32:  # space
+            sentence += " "
+
+        # -------- UI -------- #
+
+        # Top bar
+        cv2.rectangle(frame, (0, 0), (640, 60), (30, 30, 30), -1)
+
+        display_label = label if label else "-"
+        cv2.putText(frame, f"Letter: {display_label}", (10, 40),
+                    font, 1, (0, 255, 0), 2)
+
+        # Middle (sentence)
+        cv2.rectangle(frame, (0, 60), (640, 140), (10, 10, 10), -1)
+
+        cv2.putText(frame, f"{sentence}", (10, 110),
+                    font, 1.2, (255, 255, 255), 2)
+
+        # Bottom controls
+        cv2.rectangle(frame, (0, 400), (640, 480), (20, 20, 20), -1)
+
+        cv2.putText(frame,
+                    "Q=Quit | S=Speak | C=Clear | BACKSPACE=Delete | SPACE=Space",
+                    (10, 440), font, 0.5, (200, 200, 200), 1)
+
+        cv2.putText(frame,
+                    f"Confidence: {confidence:.2f}",
+                    (10, 465), font, 0.5, (150, 150, 150), 1)
+
+        cv2.imshow("Signpreter", frame)
+
     cap.release()
     cv2.destroyAllWindows()
-    tts_engine.cleanup()
-
-    print("[INFO] System closed.")
 
 
 if __name__ == "__main__":

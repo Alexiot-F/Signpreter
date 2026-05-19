@@ -1,11 +1,13 @@
 """
 collect_data.py
 ----------------
-Collects hand landmark data for training a custom WORD-based gesture model.
+Collects hand landmark data for training a LETTER-based gesture model.
 """
 
-import cv2
 import os
+os.environ["QT_QPA_PLATFORM"] = "xcb"  # Fix Qt Wayland issue (Linux)
+
+import cv2
 import sys
 import csv
 
@@ -14,17 +16,8 @@ from hand_tracker import HandTracker
 
 
 # ---------------- CONFIG ---------------- #
-WORDS = ["HELLO", "YES", "NO", "STOP", "CALL", "FUCK YOU"]
-SAMPLES_PER_CLASS = 150
-
-KEY_MAP = {
-    ord('1'): "HELLO",
-    ord('2'): "YES",
-    ord('3'): "NO",
-    ord('4'): "STOP",
-    ord('5'): "CALL",
-    ord('6'): "FUCK YOU"
-}
+LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["SPACE", "DEL", "SPEAK"]
+SAMPLES_PER_CLASS = 100   # keep low for testing, increase later
 # ---------------------------------------- #
 
 DATASET_DIR = os.path.join(os.path.dirname(__file__), "dataset")
@@ -38,21 +31,24 @@ def collect():
     current_label = None
     recording = False
     sample_count = 0
-    collected = {w: 0 for w in WORDS}
+    stability_counter = 0
+
+    data_buffer = []  # ✅ for fast batch writing
+    collected = {label: 0 for label in LABELS}
 
     csv_path = os.path.join(DATASET_DIR, "data.csv")
 
-    # Load existing data
+    # ✅ Load existing dataset
     if os.path.exists(csv_path):
         with open(csv_path, "r") as f:
             reader = csv.reader(f)
             for row in reader:
-                if row and row[0] in collected:
-                    collected[row[0]] += 1
+                if row and row[-1] in collected:
+                    collected[row[-1]] += 1
         print(f"[INFO] Existing samples: {sum(collected.values())}")
 
-    print("\n=== WORD DATA COLLECTION ===")
-    print("Press 1-6 to record words")
+    print("\n=== LETTER DATA COLLECTION ===")
+    print("Press A-Z to record letters")
     print("Press 'q' to quit\n")
 
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -65,23 +61,33 @@ def collect():
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        lm, bbox = tracker.detect(rgb)
+        lm, _ = tracker.detect(rgb)
 
         if lm is not None:
             tracker.draw_landmarks(frame, lm)
             features = tracker.extract_features(lm)
 
+            # ✅ FAST + STABLE COLLECTION
             if recording and current_label:
-                if sample_count < SAMPLES_PER_CLASS:
-                    with open(csv_path, "a", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerow([current_label] + features.tolist())
+                stability_counter += 1
+
+                if stability_counter > 2 and sample_count < SAMPLES_PER_CLASS:
+                    data_buffer.append(features.tolist() + [current_label])
 
                     sample_count += 1
                     collected[current_label] += 1
-                else:
+                    stability_counter = 0
+
+                if sample_count >= SAMPLES_PER_CLASS:
                     recording = False
                     print(f"[INFO] Done collecting '{current_label}'")
+
+        # ✅ Batch write (fast)
+        if len(data_buffer) >= 20:
+            with open(csv_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerows(data_buffer)
+            data_buffer.clear()
 
         # -------- KEY HANDLING -------- #
         key = cv2.waitKey(1) & 0xFF
@@ -89,11 +95,17 @@ def collect():
         if key == ord('q'):
             break
 
-        elif key in KEY_MAP:
-            current_label = KEY_MAP[key]
-            sample_count = 0
-            recording = True
-            print(f"[INFO] Recording '{current_label}'...")
+        elif key != 255:
+            try:
+                char = chr(key).upper()
+                if char in LABELS:
+                    current_label = char
+                    sample_count = 0
+                    stability_counter = 0
+                    recording = True
+                    print(f"[INFO] Recording '{current_label}'...")
+            except:
+                pass
 
         # -------- UI TOP -------- #
         cv2.rectangle(frame, (0, 0), (640, 50), (20, 20, 20), -1)
@@ -102,22 +114,28 @@ def collect():
             status = f"Recording: {current_label} [{sample_count}/{SAMPLES_PER_CLASS}]"
             color = (0, 255, 0)
         else:
-            status = "Press 1-6 to record words"
+            status = "Press A-Z to record letters"
             color = (200, 200, 200)
 
         cv2.putText(frame, status, (10, 35), font, 0.7, color, 2)
 
         # -------- UI BOTTOM -------- #
         cv2.rectangle(frame, (0, 430), (640, 480), (20, 20, 20), -1)
+
         done = sum(1 for v in collected.values() if v >= SAMPLES_PER_CLASS)
 
         cv2.putText(frame,
-                    f"Completed: {done}/{len(WORDS)} words | q=quit",
+                    f"Completed: {done}/{len(LABELS)} labels | q=quit",
                     (10, 465), font, 0.55, (180, 180, 180), 1)
 
-        cv2.imshow("Word Data Collection", frame)
+        cv2.imshow("Letter Data Collection", frame)
 
-    # -------- CLEAN EXIT -------- #
+    # ✅ Save remaining data
+    if data_buffer:
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(data_buffer)
+
     cap.release()
     cv2.destroyAllWindows()
 
