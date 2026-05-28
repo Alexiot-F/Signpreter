@@ -1,9 +1,3 @@
-"""
-gesture_classifier.py
----------------------
-Letter-based gesture classifier using trained ML model (.pkl)
-"""
-
 import numpy as np
 import os
 import joblib
@@ -12,9 +6,6 @@ import joblib
 class GestureClassifier:
     def __init__(self):
         self.model = None
-
-        
-        LABELS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["SPACE", "DEL", "SPEAK"]
         self._load_model()
 
     def _load_model(self):
@@ -27,7 +18,7 @@ class GestureClassifier:
         if os.path.exists(model_path):
             try:
                 self.model = joblib.load(model_path)
-                print("[INFO] Loaded letter-based ML model.")
+                print("[INFO] Loaded ML model.")
             except Exception as e:
                 print(f"[ERROR] Failed to load model: {e}")
         else:
@@ -35,31 +26,34 @@ class GestureClassifier:
 
     def predict(self, features):
         """
-        Predict letter from feature vector (63 values)
-        Returns (label, confidence)
+        Always returns (label, confidence)
+        No filtering here — handled in main.py
         """
 
         if self.model is None:
             return None, 0.0
 
         try:
-            features = np.array(features).reshape(1, -1)
+            features = np.array(features, dtype=np.float32)
 
-            # ✅ Get prediction
+            # Ensure correct shape
+            if features.ndim != 1:
+                return None, 0.0
+
+            features = features.reshape(1, -1)
+
+            # Predict class
             pred = self.model.predict(features)[0]
 
-            # ✅ Try getting confidence (if model supports it)
+            # Predict confidence
             if hasattr(self.model, "predict_proba"):
                 probs = self.model.predict_proba(features)[0]
-                confidence = np.max(probs)
+                confidence = float(np.max(probs))
             else:
-                confidence = 0.9  # fallback
+                # fallback confidence (not ideal but safe)
+                confidence = 0.5
 
-            # ✅ Confidence threshold (prevents noise)
-            if confidence > 0.80:
-                return pred, confidence
-            else:
-                return None, confidence
+            return pred, confidence
 
         except Exception as e:
             print(f"[ERROR] Prediction failed: {e}")
